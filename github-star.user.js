@@ -5,7 +5,7 @@
 // @match       *://*/*
 // @exclude     https://*.youtube.com/*
 // @grant       GM_xmlhttpRequest
-// @version     0.11.0
+// @version     0.12.0
 // @author      oooooooo
 // @homepageURL https://github.com/oooooooo/github-star
 // @supportURL  https://github.com/oooooooo/github-star/issues
@@ -37,6 +37,37 @@
 		"topics",
 	];
 
+	const DAY_MS = 24 * 60 * 60 * 1000;
+
+	// Namespace localStorage keys so the cache never collides with (or is
+	// clobbered by) other scripts or the page itself.
+	const cacheKey = (repoName) => `ghstar:${repoName}`;
+
+	// Read a cached "date,star" entry. Older versions stored entries under the
+	// bare "owner/repo" key; migrate those in place so upgrading doesn't
+	// invalidate the whole cache — otherwise every repo on the page would be
+	// re-requested at once and trip the GitHub API rate limit (which is exactly
+	// what made stars disappear after the prefix change). Returns
+	// { date, star } (both numbers) or null.
+	const readCache = (repoName) => {
+		const key = cacheKey(repoName);
+		let raw = localStorage.getItem(key);
+		if (raw === null) {
+			const legacy = localStorage.getItem(repoName);
+			// Only adopt legacy values that look like our "<timestamp>,<n>" format.
+			if (legacy !== null && /^\d+,-?\d+$/.test(legacy)) {
+				raw = legacy;
+				localStorage.setItem(key, legacy);
+				localStorage.removeItem(repoName);
+			}
+		}
+		if (raw === null) {
+			return null;
+		}
+		const [date, star] = raw.split(",");
+		return { date: Number(date), star: Number(star) };
+	};
+
 	const getStar = (repoName) => {
 		const apiUrl = `https://api.github.com/repos/${repoName}`;
 
@@ -49,9 +80,23 @@
 					Authorization: `token ${YOUR_ACCESS_TOKEN}`,
 				},
 				onload: (response) => {
+					// A missing repo (404) is "no stars", not an error. Anything else
+					// non-2xx (401 bad token, 403 rate limit, 5xx) is a genuine failure
+					// and must not be mistaken for a zero-star repo.
+					if (response.status === 404) {
+						resolve(undefined);
+						return;
+					}
+					if (response.status < 200 || response.status >= 300) {
+						reject(
+							new Error(
+								`Request failed: ${response.status} ${response.statusText}`,
+							),
+						);
+						return;
+					}
 					const data = JSON.parse(response.responseText);
-					const stars = data.stargazers_count;
-					resolve(stars);
+					resolve(data.stargazers_count);
 				},
 				onerror: (response) => {
 					reject(
@@ -70,9 +115,10 @@
 		if (star === undefined) {
 			console.log(repoName, "Not Found");
 			star = -404;
-		} else {
-			localStorage.setItem(repoName, `${date},${star}`);
 		}
+		// Cache the miss (-404) too, otherwise every page load re-requests
+		// non-existent repos and burns through the API rate limit.
+		localStorage.setItem(cacheKey(repoName), `${date},${star}`);
 		return star;
 	};
 
@@ -123,17 +169,22 @@
 		}
 		//console.log(match.input)
 
-		let date;
+		const cached = readCache(repoName);
 		let star;
-		const item = localStorage.getItem(repoName);
-		if (item) {
-			[date, star] = item.split(",");
-
-			if (Date.now() - Number(date) >= 24 * 60 * 60 * 1000) {
-				star = await setStar(repoName);
-			}
+		if (cached && Date.now() - cached.date < DAY_MS) {
+			// Fresh cache hit — no request needed.
+			star = cached.star;
 		} else {
-			star = await setStar(repoName);
+			try {
+				star = await setStar(repoName);
+			} catch (e) {
+				// A transient failure (rate limit, network error) must neither abort
+				// the loop nor erase an existing badge: fall back to the stale cached
+				// value when we have one, otherwise skip just this link.
+				console.error(repoName, e);
+				if (!cached) continue;
+				star = cached.star;
+			}
 		}
 		if (star === -404) continue;
 		// No node insertion: just tag the anchor; the ::after rule renders the badge.
