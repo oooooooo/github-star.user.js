@@ -70,9 +70,10 @@
 		if (star === undefined) {
 			console.log(repoName, "Not Found");
 			star = -404;
-		} else {
-			localStorage.setItem(repoName, `${date},${star}`);
 		}
+		// Cache the miss (-404) too, otherwise every page load re-requests
+		// non-existent repos and burns through the API rate limit.
+		localStorage.setItem(repoName, `${date},${star}`);
 		return star;
 	};
 
@@ -135,7 +136,9 @@
 		} else {
 			star = await setStar(repoName);
 		}
-		if (star === -404) continue;
+		// star may be a string (read from cache) or a number (fresh); compare
+		// numerically so a cached -404 is skipped rather than rendered.
+		if (Number(star) === -404) continue;
 		// No node insertion: just tag the anchor; the ::after rule renders the badge.
 		links[i].setAttribute(
 			"data-gh-stars",
