@@ -6,7 +6,7 @@
 // @exclude     https://*.youtube.com/*
 // @grant       GM_xmlhttpRequest
 // @connect     api.github.com
-// @version     0.12.0
+// @version     0.13.0
 // @author      oooooooo
 // @homepageURL https://github.com/oooooooo/github-star
 // @supportURL  https://github.com/oooooooo/github-star/issues
@@ -77,9 +77,13 @@
 			GM_xmlhttpRequest({
 				method: "GET",
 				url: apiUrl,
-				headers: {
-					Authorization: `token ${YOUR_ACCESS_TOKEN}`,
-				},
+				// Only send the Authorization header when a token is set. Sending
+				// `token ` with an empty value makes GitHub reject *every* request
+				// with 401; omitting it falls back to unauthenticated access
+				// (lower rate limit, but it works out of the box).
+				headers: YOUR_ACCESS_TOKEN
+					? { Authorization: `token ${YOUR_ACCESS_TOKEN}` }
+					: {},
 				onload: (response) => {
 					// A missing repo (404) is "no stars", not an error. Anything else
 					// non-2xx (401 bad token, 403 rate limit, 5xx) is a genuine failure
@@ -152,46 +156,70 @@
 		(document.head || document.documentElement).appendChild(style);
 	}
 
+	// Resolve a repo's star count from cache, or fetch it. Returns a number,
+	// or null when there's nothing to show (uncached fetch failure).
+	const resolveStar = async (repoName) => {
+		const cached = readCache(repoName);
+		if (cached && Date.now() - cached.date < DAY_MS) {
+			return cached.star; // fresh cache hit — no request needed
+		}
+		try {
+			return await setStar(repoName);
+		} catch (e) {
+			// A transient failure (rate limit, network error) must not erase an
+			// existing badge: fall back to the stale cached value when we have one.
+			console.error(repoName, e);
+			return cached ? cached.star : null;
+		}
+	};
+
+	const applyStar = (anchors, star) => {
+		if (star === null || Number(star) === -404) return;
+		// No node insertion: just tag the anchor; the ::after rule renders the badge.
+		const label = Number(star).toLocaleString("en-US");
+		for (const el of anchors) {
+			el.setAttribute("data-gh-stars", label);
+		}
+	};
+
+	// Collect matching links, grouping anchors by repo so each repo is looked
+	// up at most once even when it appears many times on the page. Anchoring
+	// the host (^https://github.com/) both fixes false matches on look-alike
+	// domains (e.g. fakegithub.com) and excludes gist.github.com for free; the
+	// widened character class [\w.-] now allows repos containing "." or "_".
+	const targets = new Map(); // repoName -> anchor[]
 	const links = document.getElementsByTagName("a");
 	for (let i = 0; i < links.length; i++) {
 		const match = links[i].href.match(
-			/github\.com\/(?<repo>[a-zA-Z0-9-]+\/[a-zA-Z0-9-]+)$/,
+			/^https?:\/\/github\.com\/(?<repo>[\w.-]+\/[\w.-]+)\/?$/,
 		);
 		if (!match) {
 			continue;
 		}
-		if (match.input.match(/https:\/\/gist\.github\.com/)) {
-			continue;
-		}
-
 		const repoName = match.groups.repo;
 		if (skipLink(repoName)) {
 			continue;
 		}
-		//console.log(match.input)
-
-		const cached = readCache(repoName);
-		let star;
-		if (cached && Date.now() - cached.date < DAY_MS) {
-			// Fresh cache hit — no request needed.
-			star = cached.star;
+		const anchors = targets.get(repoName);
+		if (anchors) {
+			anchors.push(links[i]);
 		} else {
-			try {
-				star = await setStar(repoName);
-			} catch (e) {
-				// A transient failure (rate limit, network error) must neither abort
-				// the loop nor erase an existing badge: fall back to the stale cached
-				// value when we have one, otherwise skip just this link.
-				console.error(repoName, e);
-				if (!cached) continue;
-				star = cached.star;
-			}
+			targets.set(repoName, [links[i]]);
 		}
-		if (star === -404) continue;
-		// No node insertion: just tag the anchor; the ::after rule renders the badge.
-		links[i].setAttribute(
-			"data-gh-stars",
-			Number(star).toLocaleString("en-US"),
-		);
 	}
+
+	// Look repos up with bounded concurrency: fast on link-heavy pages without
+	// firing every request at once.
+	const CONCURRENCY = 5;
+	const repoNames = [...targets.keys()];
+	let cursor = 0;
+	const worker = async () => {
+		while (cursor < repoNames.length) {
+			const repoName = repoNames[cursor++];
+			applyStar(targets.get(repoName), await resolveStar(repoName));
+		}
+	};
+	await Promise.all(
+		Array.from({ length: Math.min(CONCURRENCY, repoNames.length) }, worker),
+	);
 })();
