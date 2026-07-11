@@ -7,9 +7,11 @@
 // @grant       GM_xmlhttpRequest
 // @grant       GM_getValue
 // @grant       GM_setValue
+// @grant       GM_deleteValue
+// @grant       GM_listValues
 // @grant       GM_registerMenuCommand
 // @connect     api.github.com
-// @version     0.16.0
+// @version     0.17.0
 // @author      oooooooo
 // @homepageURL https://github.com/oooooooo/github-star
 // @supportURL  https://github.com/oooooooo/github-star/issues
@@ -41,7 +43,8 @@
 		// Apply the new token without a disruptive full reload: clear the
 		// rate-limit back-off and any failed lookups, then re-scan the page.
 		rateLimitedUntil = 0;
-		localStorage.removeItem(RATE_LIMIT_KEY);
+		// eslint-disable-next-line no-undef
+		GM_deleteValue(RATE_LIMIT_KEY);
 		for (const [repo, star] of resolved) {
 			if (star === null) {
 				resolved.delete(repo);
@@ -73,30 +76,47 @@
 
 	const DAY_MS = 24 * 60 * 60 * 1000;
 
-	// Namespace localStorage keys so the cache never collides with (or is
-	// clobbered by) other scripts or the page itself.
+	// The star cache and rate-limit state live in the userscript manager's
+	// storage (GM_*Value), not localStorage: localStorage is per-origin, so
+	// each site kept its own copy of the cache (duplicate API requests for the
+	// same repo) and its own back-off record (each site re-tripped the same
+	// global rate limit). GM storage is shared across every site the script
+	// runs on. The "ghstar:" prefix keeps entries distinct from other script
+	// values such as the access token.
 	const cacheKey = (repoName) => `ghstar:${repoName}`;
 
 	// Reserved key (no slash, so it can't collide with an "owner/repo" entry)
 	// recording the epoch-ms until which the API rate limit is in effect.
 	const RATE_LIMIT_KEY = "ghstar:rateLimitedUntil";
 
-	// Read a cached "date,star" entry. Older versions stored entries under the
-	// bare "owner/repo" key; migrate those in place so upgrading doesn't
-	// invalidate the whole cache — otherwise every repo on the page would be
+	// Read a cached "date,star" entry. Older versions cached per-site in
+	// localStorage (originally under the bare "owner/repo" key, later under
+	// "ghstar:owner/repo"); adopt those into GM storage so upgrading doesn't
+	// invalidate the cache — otherwise every repo on the page would be
 	// re-requested at once and trip the GitHub API rate limit (which is exactly
 	// what made stars disappear after the prefix change). Returns
 	// { date, star } (both numbers) or null.
 	const readCache = (repoName) => {
 		const key = cacheKey(repoName);
-		let raw = localStorage.getItem(key);
+		// eslint-disable-next-line no-undef
+		let raw = GM_getValue(key, null);
 		if (raw === null) {
-			const legacy = localStorage.getItem(repoName);
-			// Only adopt legacy values that look like our "<timestamp>,<n>" format.
-			if (legacy !== null && /^\d+,-?\d+$/.test(legacy)) {
-				raw = legacy;
-				localStorage.setItem(key, legacy);
-				localStorage.removeItem(repoName);
+			// Guard the localStorage access itself: in sandboxed iframes merely
+			// touching localStorage throws a SecurityError, and that must not
+			// kill the script.
+			try {
+				const legacy =
+					localStorage.getItem(key) ?? localStorage.getItem(repoName);
+				// Only adopt legacy values that look like our "<timestamp>,<n>" format.
+				if (legacy !== null && /^\d+,-?\d+$/.test(legacy)) {
+					raw = legacy;
+					// eslint-disable-next-line no-undef
+					GM_setValue(key, legacy);
+					localStorage.removeItem(key);
+					localStorage.removeItem(repoName);
+				}
+			} catch {
+				// No localStorage here (sandboxed iframe) — nothing to migrate.
 			}
 		}
 		if (raw === null) {
@@ -121,6 +141,13 @@
 				headers: accessToken
 					? { Authorization: `token ${accessToken}` }
 					: {},
+				// Without a timeout, a connection that never completes fires neither
+				// onload nor onerror, leaving this promise pending forever — which
+				// permanently leaks one of the concurrency slots draining the queue.
+				timeout: 10 * 1000,
+				ontimeout: () => {
+					reject(new Error(`Request timed out: ${apiUrl}`));
+				},
 				onload: (response) => {
 					// A missing repo (404) is "no stars", not an error. Anything else
 					// non-2xx (401 bad token, 403 rate limit, 5xx) is a genuine failure
@@ -184,7 +211,8 @@
 		}
 		// Cache the miss (-404) too, otherwise every page load re-requests
 		// non-existent repos and burns through the API rate limit.
-		localStorage.setItem(cacheKey(repoName), `${date},${star}`);
+		// eslint-disable-next-line no-undef
+		GM_setValue(cacheKey(repoName), `${date},${star}`);
 		return star;
 	};
 
@@ -210,24 +238,27 @@
 		(document.head || document.documentElement).appendChild(style);
 	}
 
-	// Evict cache entries we haven't refreshed in a long time so localStorage
+	// Evict cache entries we haven't refreshed in a long time so GM storage
 	// doesn't grow without bound as you browse more repos over time.
 	const MAX_CACHE_AGE = 90 * DAY_MS;
-	for (let i = localStorage.length - 1; i >= 0; i--) {
-		const key = localStorage.key(i);
-		if (!key || !key.startsWith("ghstar:") || key === RATE_LIMIT_KEY) {
+	// eslint-disable-next-line no-undef
+	for (const key of GM_listValues()) {
+		if (!key.startsWith("ghstar:") || key === RATE_LIMIT_KEY) {
 			continue;
 		}
-		const ts = Number((localStorage.getItem(key) || "").split(",")[0]);
+		// eslint-disable-next-line no-undef
+		const ts = Number(String(GM_getValue(key, "")).split(",")[0]);
 		if (!ts || Date.now() - ts > MAX_CACHE_AGE) {
-			localStorage.removeItem(key);
+			// eslint-disable-next-line no-undef
+			GM_deleteValue(key);
 		}
 	}
 
 	// Once the API rate-limits us, further requests just fail too. Remember when
-	// the limit resets (persisted, so a reload within the window doesn't retry
-	// and fail again) and serve cache until then.
-	let rateLimitedUntil = Number(localStorage.getItem(RATE_LIMIT_KEY)) || 0;
+	// the limit resets (persisted in GM storage, so neither a reload nor another
+	// site retries and fails again within the window) and serve cache until then.
+	// eslint-disable-next-line no-undef
+	let rateLimitedUntil = Number(GM_getValue(RATE_LIMIT_KEY, 0)) || 0;
 	const isRateLimited = () => Date.now() < rateLimitedUntil;
 
 	// Resolve a repo's star count from cache, or fetch it. Returns a number,
@@ -248,7 +279,8 @@
 			console.error(repoName, e);
 			if (e && e.rateLimitReset) {
 				rateLimitedUntil = e.rateLimitReset;
-				localStorage.setItem(RATE_LIMIT_KEY, String(rateLimitedUntil));
+				// eslint-disable-next-line no-undef
+				GM_setValue(RATE_LIMIT_KEY, String(rateLimitedUntil));
 			}
 			return cached ? cached.star : null;
 		}
