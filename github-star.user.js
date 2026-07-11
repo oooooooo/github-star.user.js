@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        GitHub Star
-// @namespace   Violentmonkey Scripts
-// @description star
+// @namespace   https://github.com/oooooooo
+// @description Show GitHub repository star counts next to repo links on any web page.
 // @match       *://*/*
 // @exclude     https://*.youtube.com/*
 // @grant       GM_xmlhttpRequest
