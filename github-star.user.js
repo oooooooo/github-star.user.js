@@ -6,19 +6,20 @@
 // @exclude     https://*.youtube.com/*
 // @grant       GM_xmlhttpRequest
 // @connect     api.github.com
-// @version     0.13.0
+// @version     0.14.0
 // @author      oooooooo
 // @homepageURL https://github.com/oooooooo/github-star
 // @supportURL  https://github.com/oooooooo/github-star/issues
 // @updateURL   https://raw.githubusercontent.com/oooooooo/github-star/main/github-star.user.js
 // @downloadURL https://raw.githubusercontent.com/oooooooo/github-star/main/github-star.user.js
 // ==/UserScript==
-(async () => {
+(() => {
 	// https://github.com/settings/personal-access-tokens
 	// - Read access to starring
 	const YOUR_ACCESS_TOKEN = "";
 
-	const githubOfficialLinks = [
+	// Owner slugs that are really GitHub's own pages, not user/org repos.
+	const githubOfficialLinks = new Set([
 		"_private",
 		"about",
 		"apps",
@@ -36,7 +37,7 @@
 		"sponsors",
 		"trending",
 		"topics",
-	];
+	]);
 
 	const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -93,11 +94,11 @@
 						return;
 					}
 					if (response.status < 200 || response.status >= 300) {
-						reject(
-							new Error(
-								`Request failed: ${response.status} ${response.statusText}`,
-							),
+						const err = new Error(
+							`Request failed: ${response.status} ${response.statusText}`,
 						);
+						err.status = response.status;
+						reject(err);
 						return;
 					}
 					const data = JSON.parse(response.responseText);
@@ -118,7 +119,6 @@
 		const date = Date.now();
 		let star = await getStar(repoName);
 		if (star === undefined) {
-			console.log(repoName, "Not Found");
 			star = -404;
 		}
 		// Cache the miss (-404) too, otherwise every page load re-requests
@@ -127,15 +127,8 @@
 		return star;
 	};
 
-	const skipLink = (repoName) => {
-		for (const link of githubOfficialLinks) {
-			const regexLink = RegExp(`^${link}/`);
-			if (repoName.match(regexLink)) {
-				return true;
-			}
-		}
-		return false;
-	};
+	const skipLink = (repoName) =>
+		githubOfficialLinks.has(repoName.split("/")[0]);
 
 	// Inject the star badge via a CSS ::after pseudo-element so that we never
 	// add or remove DOM nodes in the page. Frameworks (React/Vue/etc.) crash
@@ -156,6 +149,24 @@
 		(document.head || document.documentElement).appendChild(style);
 	}
 
+	// Evict cache entries we haven't refreshed in a long time so localStorage
+	// doesn't grow without bound as you browse more repos over time.
+	const MAX_CACHE_AGE = 90 * DAY_MS;
+	for (let i = localStorage.length - 1; i >= 0; i--) {
+		const key = localStorage.key(i);
+		if (!key || !key.startsWith("ghstar:")) {
+			continue;
+		}
+		const ts = Number((localStorage.getItem(key) || "").split(",")[0]);
+		if (!ts || Date.now() - ts > MAX_CACHE_AGE) {
+			localStorage.removeItem(key);
+		}
+	}
+
+	// Once the API rate-limits us, every further request will just 403 too;
+	// this latch stops us from hammering it for the rest of the page session.
+	let rateLimited = false;
+
 	// Resolve a repo's star count from cache, or fetch it. Returns a number,
 	// or null when there's nothing to show (uncached fetch failure).
 	const resolveStar = async (repoName) => {
@@ -163,12 +174,18 @@
 		if (cached && Date.now() - cached.date < DAY_MS) {
 			return cached.star; // fresh cache hit — no request needed
 		}
+		if (rateLimited) {
+			return cached ? cached.star : null; // serve cache, don't hit the API
+		}
 		try {
 			return await setStar(repoName);
 		} catch (e) {
 			// A transient failure (rate limit, network error) must not erase an
 			// existing badge: fall back to the stale cached value when we have one.
 			console.error(repoName, e);
+			if (e && (e.status === 403 || e.status === 429)) {
+				rateLimited = true;
+			}
 			return cached ? cached.star : null;
 		}
 	};
@@ -182,44 +199,87 @@
 		}
 	};
 
-	// Collect matching links, grouping anchors by repo so each repo is looked
-	// up at most once even when it appears many times on the page. Anchoring
-	// the host (^https://github.com/) both fixes false matches on look-alike
-	// domains (e.g. fakegithub.com) and excludes gist.github.com for free; the
-	// widened character class [\w.-] now allows repos containing "." or "_".
-	const targets = new Map(); // repoName -> anchor[]
-	const links = document.getElementsByTagName("a");
-	for (let i = 0; i < links.length; i++) {
-		const match = links[i].href.match(
-			/^https?:\/\/github\.com\/(?<repo>[\w.-]+\/[\w.-]+)\/?$/,
-		);
-		if (!match) {
-			continue;
-		}
-		const repoName = match.groups.repo;
-		if (skipLink(repoName)) {
-			continue;
-		}
-		const anchors = targets.get(repoName);
-		if (anchors) {
-			anchors.push(links[i]);
-		} else {
-			targets.set(repoName, [links[i]]);
-		}
-	}
-
-	// Look repos up with bounded concurrency: fast on link-heavy pages without
-	// firing every request at once.
+	// Repos already resolved this page session (value = star | null) and repos
+	// whose lookup is in flight (value = anchors waiting for the result). Both
+	// dedupe work, so a repo that appears many times — or reappears via a later
+	// DOM mutation — is fetched at most once.
+	const resolved = new Map();
+	const pending = new Map();
+	const queue = [];
 	const CONCURRENCY = 5;
-	const repoNames = [...targets.keys()];
-	let cursor = 0;
-	const worker = async () => {
-		while (cursor < repoNames.length) {
-			const repoName = repoNames[cursor++];
-			applyStar(targets.get(repoName), await resolveStar(repoName));
+	let active = 0;
+
+	// Drain the queue with bounded concurrency: fast on link-heavy pages without
+	// firing every request at once.
+	const pump = () => {
+		while (active < CONCURRENCY && queue.length > 0) {
+			const repoName = queue.shift();
+			active += 1;
+			resolveStar(repoName)
+				.then((star) => {
+					resolved.set(repoName, star);
+					applyStar(pending.get(repoName), star);
+					pending.delete(repoName);
+				})
+				.finally(() => {
+					active -= 1;
+					pump();
+				});
 		}
 	};
-	await Promise.all(
-		Array.from({ length: Math.min(CONCURRENCY, repoNames.length) }, worker),
-	);
+
+	// Anchoring the host (^https://github.com/) both fixes false matches on
+	// look-alike domains (e.g. fakegithub.com) and excludes gist.github.com for
+	// free; the [\w.-] class allows repos containing "." or "_".
+	const REPO_RE = /^https?:\/\/github\.com\/(?<repo>[\w.-]+\/[\w.-]+)\/?$/;
+
+	const considerAnchor = (a) => {
+		// Skip SVG <a> (href is not a string) and anchors we already badged.
+		if (typeof a.href !== "string") return;
+		if (a.dataset && a.dataset.ghStars !== undefined) return;
+		const match = a.href.match(REPO_RE);
+		if (!match) return;
+		const repoName = match.groups.repo;
+		if (skipLink(repoName)) return;
+		if (resolved.has(repoName)) {
+			applyStar([a], resolved.get(repoName));
+			return;
+		}
+		const waiting = pending.get(repoName);
+		if (waiting) {
+			waiting.push(a); // a fetch is already queued; ride along
+			return;
+		}
+		pending.set(repoName, [a]);
+		queue.push(repoName);
+		pump();
+	};
+
+	const scan = (root) => {
+		if (root.tagName === "A") {
+			considerAnchor(root);
+		} else if (root.querySelectorAll) {
+			for (const a of root.querySelectorAll("a")) {
+				considerAnchor(a);
+			}
+		}
+	};
+
+	scan(document);
+
+	// Many sites add repo links after load (SPA navigation, infinite scroll);
+	// watch for them so their badges appear too.
+	const observer = new MutationObserver((mutations) => {
+		for (const mutation of mutations) {
+			for (const node of mutation.addedNodes) {
+				if (node.nodeType === 1) {
+					scan(node);
+				}
+			}
+		}
+	});
+	observer.observe(document.body || document.documentElement, {
+		childList: true,
+		subtree: true,
+	});
 })();
