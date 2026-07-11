@@ -139,9 +139,7 @@
 				// `token ` with an empty value makes GitHub reject *every* request
 				// with 401; omitting it falls back to unauthenticated access
 				// (lower rate limit, but it works out of the box).
-				headers: accessToken
-					? { Authorization: `token ${accessToken}` }
-					: {},
+				headers: accessToken ? { Authorization: `token ${accessToken}` } : {},
 				// Without a timeout, a connection that never completes fires neither
 				// onload nor onerror, leaving this promise pending forever — which
 				// permanently leaks one of the concurrency slots draining the queue.
@@ -278,7 +276,7 @@
 			// A transient failure (rate limit, network error) must not erase an
 			// existing badge: fall back to the stale cached value when we have one.
 			console.error(repoName, e);
-			if (e && e.rateLimitReset) {
+			if (e?.rateLimitReset) {
 				rateLimitedUntil = e.rateLimitReset;
 				// eslint-disable-next-line no-undef
 				GM_setValue(RATE_LIMIT_KEY, String(rateLimitedUntil));
