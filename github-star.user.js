@@ -13,6 +13,7 @@
 // @connect     api.github.com
 // @version     0.17.0
 // @author      oooooooo
+// @license     MIT
 // @homepageURL https://github.com/oooooooo/github-star
 // @supportURL  https://github.com/oooooooo/github-star/issues
 // @updateURL   https://raw.githubusercontent.com/oooooooo/github-star/main/github-star.user.js
