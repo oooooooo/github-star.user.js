@@ -5,7 +5,7 @@
 // @match       *://*/*
 // @exclude     https://*.youtube.com/*
 // @grant       GM_xmlhttpRequest
-// @version     0.10.0
+// @version     0.11.0
 // @author      oooooooo
 // ==/UserScript==
 (async () => {
@@ -82,6 +82,25 @@
 		return false;
 	};
 
+	// Inject the star badge via a CSS ::after pseudo-element so that we never
+	// add or remove DOM nodes in the page. Frameworks (React/Vue/etc.) crash
+	// when a third party inserts sibling nodes into DOM they manage; setting a
+	// data-* attribute on an existing element is far less invasive.
+	const STYLE_ID = "gh-star-style";
+	if (!document.getElementById(STYLE_ID)) {
+		const style = document.createElement("style");
+		style.id = STYLE_ID;
+		style.textContent = `
+			a[data-gh-stars]::after {
+				content: " \\2605" attr(data-gh-stars);
+				color: #e3b341;
+				font-weight: 600;
+				white-space: nowrap;
+			}
+		`;
+		(document.head || document.documentElement).appendChild(style);
+	}
+
 	const links = document.getElementsByTagName("a");
 	for (let i = 0; i < links.length; i++) {
 		const match = links[i].href.match(
@@ -113,9 +132,10 @@
 			star = await setStar(repoName);
 		}
 		if (star === -404) continue;
-		links[i].insertAdjacentHTML(
-			"afterend",
-			` <font color="#FFD700">★</font>${Number(star).toLocaleString("en-US")}`,
+		// No node insertion: just tag the anchor; the ::after rule renders the badge.
+		links[i].setAttribute(
+			"data-gh-stars",
+			Number(star).toLocaleString("en-US"),
 		);
 	}
 })();
