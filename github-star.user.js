@@ -5,6 +5,7 @@
 // @match       *://*/*
 // @exclude     https://*.youtube.com/*
 // @grant       GM_xmlhttpRequest
+// @connect     api.github.com
 // @version     0.12.0
 // @author      oooooooo
 // @homepageURL https://github.com/oooooooo/github-star
