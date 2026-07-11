@@ -5,8 +5,11 @@
 // @match       *://*/*
 // @exclude     https://*.youtube.com/*
 // @grant       GM_xmlhttpRequest
+// @grant       GM_getValue
+// @grant       GM_setValue
+// @grant       GM_registerMenuCommand
 // @connect     api.github.com
-// @version     0.14.0
+// @version     0.15.0
 // @author      oooooooo
 // @homepageURL https://github.com/oooooooo/github-star
 // @supportURL  https://github.com/oooooooo/github-star/issues
@@ -14,9 +17,29 @@
 // @downloadURL https://raw.githubusercontent.com/oooooooo/github-star/main/github-star.user.js
 // ==/UserScript==
 (() => {
-	// https://github.com/settings/personal-access-tokens
-	// - Read access to starring
-	const YOUR_ACCESS_TOKEN = "";
+	// The token is stored via the userscript manager (GM_setValue) rather than
+	// hardcoded, so it survives auto-updates and is never committed to source.
+	// Set or change it from the userscript menu: "Set GitHub access token".
+	// Create one at https://github.com/settings/personal-access-tokens with
+	// read-only access to starring.
+	const TOKEN_KEY = "githubAccessToken";
+	// eslint-disable-next-line no-undef
+	let accessToken = GM_getValue(TOKEN_KEY, "");
+
+	// eslint-disable-next-line no-undef
+	GM_registerMenuCommand("Set GitHub access token", () => {
+		const input = prompt(
+			"GitHub personal access token (read-only; raises the API rate limit).\nLeave blank to clear.",
+			accessToken,
+		);
+		if (input === null) {
+			return; // cancelled
+		}
+		accessToken = input.trim();
+		// eslint-disable-next-line no-undef
+		GM_setValue(TOKEN_KEY, accessToken);
+		location.reload();
+	});
 
 	// Owner slugs that are really GitHub's own pages, not user/org repos.
 	const githubOfficialLinks = new Set([
@@ -82,8 +105,8 @@
 				// `token ` with an empty value makes GitHub reject *every* request
 				// with 401; omitting it falls back to unauthenticated access
 				// (lower rate limit, but it works out of the box).
-				headers: YOUR_ACCESS_TOKEN
-					? { Authorization: `token ${YOUR_ACCESS_TOKEN}` }
+				headers: accessToken
+					? { Authorization: `token ${accessToken}` }
 					: {},
 				onload: (response) => {
 					// A missing repo (404) is "no stars", not an error. Anything else
