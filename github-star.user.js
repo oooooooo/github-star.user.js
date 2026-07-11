@@ -125,15 +125,22 @@
 
 		let date;
 		let star;
-		const item = localStorage.getItem(repoName);
-		if (item) {
-			[date, star] = item.split(",");
+		try {
+			const item = localStorage.getItem(repoName);
+			if (item) {
+				[date, star] = item.split(",");
 
-			if (Date.now() - Number(date) >= 24 * 60 * 60 * 1000) {
+				if (Date.now() - Number(date) >= 24 * 60 * 60 * 1000) {
+					star = await setStar(repoName);
+				}
+			} else {
 				star = await setStar(repoName);
 			}
-		} else {
-			star = await setStar(repoName);
+		} catch (e) {
+			// A single failed request (rate limit, network error) must not abort
+			// the whole loop and leave the remaining links unprocessed.
+			console.error(repoName, e);
+			continue;
 		}
 		if (star === -404) continue;
 		// No node insertion: just tag the anchor; the ::after rule renders the badge.
