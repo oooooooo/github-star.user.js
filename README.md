@@ -1,12 +1,14 @@
 # GitHub Star
 
+[![Install](https://img.shields.io/badge/Install-userscript-brightgreen?logo=tampermonkey&logoColor=white)](https://raw.githubusercontent.com/oooooooo/github-star/main/github-star.user.js)
+
 A userscript that shows GitHub repository star counts next to repo links on any web page.
 
 Browse Hacker News, Reddit, blog posts, or awesome-lists, and every link to a GitHub repository gets a ★ badge with its current star count — no need to open the repo to see how popular it is.
 
-```
-Check out https://github.com/facebook/react ★115,238 for building UIs.
-```
+![Awesome Userscripts](awesome-userscripts.png)
+
+via [Awesome Userscripts](https://github.com/awesome-scripts/awesome-userscripts#-github)
 
 ## Features
 
@@ -19,7 +21,7 @@ Check out https://github.com/facebook/react ★115,238 for building UIs.
 ## Installation
 
 1. Install a userscript manager:
-   - [Violentmonkey](https://violentmonkey.github.io/) (recommended)
+   - [Violentmonkey](https://violentmonkey.github.io/)
    - [Tampermonkey](https://www.tampermonkey.net/)
 2. Click to install the script:
 
