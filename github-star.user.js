@@ -9,7 +9,7 @@
 // @grant       GM_setValue
 // @grant       GM_registerMenuCommand
 // @connect     api.github.com
-// @version     0.15.0
+// @version     0.16.0
 // @author      oooooooo
 // @homepageURL https://github.com/oooooooo/github-star
 // @supportURL  https://github.com/oooooooo/github-star/issues
@@ -38,7 +38,16 @@
 		accessToken = input.trim();
 		// eslint-disable-next-line no-undef
 		GM_setValue(TOKEN_KEY, accessToken);
-		location.reload();
+		// Apply the new token without a disruptive full reload: clear the
+		// rate-limit back-off and any failed lookups, then re-scan the page.
+		rateLimitedUntil = 0;
+		localStorage.removeItem(RATE_LIMIT_KEY);
+		for (const [repo, star] of resolved) {
+			if (star === null) {
+				resolved.delete(repo);
+			}
+		}
+		scan(document);
 	});
 
 	// Owner slugs that are really GitHub's own pages, not user/org repos.
@@ -67,6 +76,10 @@
 	// Namespace localStorage keys so the cache never collides with (or is
 	// clobbered by) other scripts or the page itself.
 	const cacheKey = (repoName) => `ghstar:${repoName}`;
+
+	// Reserved key (no slash, so it can't collide with an "owner/repo" entry)
+	// recording the epoch-ms until which the API rate limit is in effect.
+	const RATE_LIMIT_KEY = "ghstar:rateLimitedUntil";
 
 	// Read a cached "date,star" entry. Older versions stored entries under the
 	// bare "owner/repo" key; migrate those in place so upgrading doesn't
@@ -121,11 +134,36 @@
 							`Request failed: ${response.status} ${response.statusText}`,
 						);
 						err.status = response.status;
+						// A real rate-limit (429, or 403 with the quota exhausted):
+						// record when it resets so we can back off until then.
+						const headers = response.responseHeaders || "";
+						const remaining = headers.match(/x-ratelimit-remaining:\s*(\d+)/i);
+						if (
+							response.status === 429 ||
+							(response.status === 403 &&
+								remaining &&
+								Number(remaining[1]) === 0)
+						) {
+							const reset = headers.match(/x-ratelimit-reset:\s*(\d+)/i);
+							const retry = headers.match(/retry-after:\s*(\d+)/i);
+							err.rateLimitReset = reset
+								? Number(reset[1]) * 1000
+								: retry
+									? Date.now() + Number(retry[1]) * 1000
+									: Date.now() + 60 * 60 * 1000;
+						}
 						reject(err);
 						return;
 					}
-					const data = JSON.parse(response.responseText);
-					resolve(data.stargazers_count);
+					try {
+						const data = JSON.parse(response.responseText);
+						resolve(data.stargazers_count);
+					} catch (parseError) {
+						// A 200 with an unparseable body (proxy / error page) must
+						// reject, not throw out of this callback: an uncaught throw here
+						// would leave the promise pending forever and stall the queue.
+						reject(parseError);
+					}
 				},
 				onerror: (response) => {
 					reject(
@@ -177,7 +215,7 @@
 	const MAX_CACHE_AGE = 90 * DAY_MS;
 	for (let i = localStorage.length - 1; i >= 0; i--) {
 		const key = localStorage.key(i);
-		if (!key || !key.startsWith("ghstar:")) {
+		if (!key || !key.startsWith("ghstar:") || key === RATE_LIMIT_KEY) {
 			continue;
 		}
 		const ts = Number((localStorage.getItem(key) || "").split(",")[0]);
@@ -186,9 +224,11 @@
 		}
 	}
 
-	// Once the API rate-limits us, every further request will just 403 too;
-	// this latch stops us from hammering it for the rest of the page session.
-	let rateLimited = false;
+	// Once the API rate-limits us, further requests just fail too. Remember when
+	// the limit resets (persisted, so a reload within the window doesn't retry
+	// and fail again) and serve cache until then.
+	let rateLimitedUntil = Number(localStorage.getItem(RATE_LIMIT_KEY)) || 0;
+	const isRateLimited = () => Date.now() < rateLimitedUntil;
 
 	// Resolve a repo's star count from cache, or fetch it. Returns a number,
 	// or null when there's nothing to show (uncached fetch failure).
@@ -197,7 +237,7 @@
 		if (cached && Date.now() - cached.date < DAY_MS) {
 			return cached.star; // fresh cache hit — no request needed
 		}
-		if (rateLimited) {
+		if (isRateLimited()) {
 			return cached ? cached.star : null; // serve cache, don't hit the API
 		}
 		try {
@@ -206,8 +246,9 @@
 			// A transient failure (rate limit, network error) must not erase an
 			// existing badge: fall back to the stale cached value when we have one.
 			console.error(repoName, e);
-			if (e && (e.status === 403 || e.status === 429)) {
-				rateLimited = true;
+			if (e && e.rateLimitReset) {
+				rateLimitedUntil = e.rateLimitReset;
+				localStorage.setItem(RATE_LIMIT_KEY, String(rateLimitedUntil));
 			}
 			return cached ? cached.star : null;
 		}
@@ -262,7 +303,9 @@
 		if (a.dataset && a.dataset.ghStars !== undefined) return;
 		const match = a.href.match(REPO_RE);
 		if (!match) return;
-		const repoName = match.groups.repo;
+		// GitHub repo names are case-insensitive, so "Foo/Bar" and "foo/bar"
+		// should share one lookup and cache entry.
+		const repoName = match.groups.repo.toLowerCase();
 		if (skipLink(repoName)) return;
 		if (resolved.has(repoName)) {
 			applyStar([a], resolved.get(repoName));
@@ -291,14 +334,32 @@
 	scan(document);
 
 	// Many sites add repo links after load (SPA navigation, infinite scroll);
-	// watch for them so their badges appear too.
+	// watch for them so their badges appear too. Batch bursts of mutations into
+	// one idle pass so busy pages (chat apps, feeds) aren't scanned per-mutation.
+	const pendingScans = [];
+	let scanScheduled = false;
+	const scheduleIdle =
+		typeof requestIdleCallback === "function"
+			? requestIdleCallback
+			: (cb) => setTimeout(cb, 200);
+	const flushScans = () => {
+		scanScheduled = false;
+		const nodes = pendingScans.splice(0);
+		for (const node of nodes) {
+			scan(node);
+		}
+	};
 	const observer = new MutationObserver((mutations) => {
 		for (const mutation of mutations) {
 			for (const node of mutation.addedNodes) {
 				if (node.nodeType === 1) {
-					scan(node);
+					pendingScans.push(node);
 				}
 			}
+		}
+		if (!scanScheduled && pendingScans.length > 0) {
+			scanScheduled = true;
+			scheduleIdle(flushScans);
 		}
 	});
 	observer.observe(document.body || document.documentElement, {
