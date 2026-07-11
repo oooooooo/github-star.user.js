@@ -7,6 +7,10 @@
 // @grant       GM_xmlhttpRequest
 // @version     0.11.0
 // @author      oooooooo
+// @homepageURL https://github.com/oooooooo/github-star
+// @supportURL  https://github.com/oooooooo/github-star/issues
+// @updateURL   https://raw.githubusercontent.com/oooooooo/github-star/main/github-star.user.js
+// @downloadURL https://raw.githubusercontent.com/oooooooo/github-star/main/github-star.user.js
 // ==/UserScript==
 (async () => {
 	// https://github.com/settings/personal-access-tokens
