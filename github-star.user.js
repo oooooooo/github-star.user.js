@@ -13,13 +13,13 @@
 // @connect     api.github.com
 // @sandbox     DOM
 // @inject-into content
-// @version     0.18.0
+// @version     0.18.1
 // @author      oooooooo
 // @license     MIT
-// @homepageURL https://github.com/oooooooo/github-star
-// @supportURL  https://github.com/oooooooo/github-star/issues
-// @updateURL   https://raw.githubusercontent.com/oooooooo/github-star/main/github-star.user.js
-// @downloadURL https://raw.githubusercontent.com/oooooooo/github-star/main/github-star.user.js
+// @homepageURL https://github.com/oooooooo/github-star.user.js
+// @supportURL  https://github.com/oooooooo/github-star.user.js/issues
+// @updateURL   https://raw.githubusercontent.com/oooooooo/github-star.user.js/main/github-star.user.js
+// @downloadURL https://raw.githubusercontent.com/oooooooo/github-star.user.js/main/github-star.user.js
 // ==/UserScript==
 (() => {
 	// The token is stored via the userscript manager (GM_setValue) rather than

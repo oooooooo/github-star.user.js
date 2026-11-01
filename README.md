@@ -1,6 +1,6 @@
 # GitHub Star
 
-[![Install](https://img.shields.io/badge/Install-userscript-brightgreen?logo=tampermonkey&logoColor=white)](https://raw.githubusercontent.com/oooooooo/github-star/main/github-star.user.js)
+[![Install](https://img.shields.io/badge/Install-userscript-brightgreen?logo=tampermonkey&logoColor=white)](https://raw.githubusercontent.com/oooooooo/github-star.user.js/main/github-star.user.js)
 
 A userscript that shows GitHub repository star counts next to repo links on any web page.
 
@@ -25,7 +25,7 @@ via [Awesome Userscripts](https://github.com/awesome-scripts/awesome-userscripts
    - [Tampermonkey](https://www.tampermonkey.net/)
 2. Click to install the script:
 
-   **[Install github-star.user.js](https://raw.githubusercontent.com/oooooooo/github-star/main/github-star.user.js)**
+   **[Install github-star.user.js](https://raw.githubusercontent.com/oooooooo/github-star.user.js/main/github-star.user.js)**
 
    Your userscript manager will pick it up and show an install prompt. Updates are delivered automatically from this repository.
 
