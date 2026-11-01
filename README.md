@@ -34,10 +34,10 @@ via [Awesome Userscripts](https://github.com/awesome-scripts/awesome-userscripts
 Without a token, the GitHub API allows 60 requests per hour, which is fine for light browsing (results are cached). To raise the limit to 5,000/hour:
 
 1. Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens) — read-only access to starring is enough; no other permissions are needed
-2. Open the userscript manager menu on any page and choose **Set GitHub access token**
+2. Open the userscript manager menu on a trusted page (for example `https://github.com`) and choose **Set GitHub access token**. If the script appears grayed out, reload the page first — the menu only appears on tabs where the script has run
 3. Paste the token
 
-The token is stored in the userscript manager's storage, never in the script source.
+The token is stored in the userscript manager's storage, never in the script source. The dialog never shows the saved token; to remove it, choose **Clear GitHub access token**.
 
 ## License
 

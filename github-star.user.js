@@ -11,7 +11,9 @@
 // @grant       GM_listValues
 // @grant       GM_registerMenuCommand
 // @connect     api.github.com
-// @version     0.17.0
+// @sandbox     DOM
+// @inject-into content
+// @version     0.18.0
 // @author      oooooooo
 // @license     MIT
 // @homepageURL https://github.com/oooooooo/github-star
@@ -26,23 +28,23 @@
 	// Create one at https://github.com/settings/personal-access-tokens with
 	// read-only access to starring.
 	const TOKEN_KEY = "githubAccessToken";
+	// Read the token from GM storage on every use instead of caching it at
+	// load time: GM storage is shared across tabs, so a token set or cleared in
+	// another tab must take effect here too (a stale copy made "Clear" refuse
+	// to delete a token set elsewhere, and kept sending a deleted token).
 	// eslint-disable-next-line no-undef
-	let accessToken = GM_getValue(TOKEN_KEY, "");
+	const getAccessToken = () => GM_getValue(TOKEN_KEY, "");
 
-	// eslint-disable-next-line no-undef
-	GM_registerMenuCommand("Set GitHub access token", () => {
-		const input = prompt(
-			"GitHub personal access token (read-only; raises the API rate limit).\nLeave blank to clear.",
-			accessToken,
-		);
-		if (input === null) {
-			return; // cancelled
+	// Apply a token change without a disruptive full reload: clear the
+	// rate-limit back-off and any failed lookups, then re-scan the page.
+	const applyToken = (token) => {
+		if (token) {
+			// eslint-disable-next-line no-undef
+			GM_setValue(TOKEN_KEY, token);
+		} else {
+			// eslint-disable-next-line no-undef
+			GM_deleteValue(TOKEN_KEY);
 		}
-		accessToken = input.trim();
-		// eslint-disable-next-line no-undef
-		GM_setValue(TOKEN_KEY, accessToken);
-		// Apply the new token without a disruptive full reload: clear the
-		// rate-limit back-off and any failed lookups, then re-scan the page.
 		rateLimitedUntil = 0;
 		// eslint-disable-next-line no-undef
 		GM_deleteValue(RATE_LIMIT_KEY);
@@ -52,6 +54,40 @@
 			}
 		}
 		scan(document);
+	};
+
+	// The saved token is never passed to prompt()/confirm() (not even masked
+	// or as a suffix): if the script ends up in the page's JS world, a hostile
+	// page that has replaced window.prompt would otherwise receive the saved
+	// token just from the user opening this dialog, even on Cancel.
+	// eslint-disable-next-line no-undef
+	GM_registerMenuCommand("Set GitHub access token", () => {
+		const status = getAccessToken()
+			? "A token is configured."
+			: "No token is set.";
+		const input = prompt(
+			`GitHub personal access token (read-only; raises the API rate limit).\n${status} Enter a new token to replace it; Cancel or blank keeps the current setting.`,
+			"",
+		);
+		// Cancel or blank input must not touch the saved token: with an empty
+		// default, treating blank as "clear" would make an accidental OK wipe it.
+		const token = input?.trim();
+		if (!token) {
+			return;
+		}
+		applyToken(token);
+	});
+
+	// eslint-disable-next-line no-undef
+	GM_registerMenuCommand("Clear GitHub access token", () => {
+		if (!getAccessToken()) {
+			alert("No GitHub access token is set.");
+			return;
+		}
+		if (!confirm("Remove the saved GitHub access token?")) {
+			return;
+		}
+		applyToken("");
 	});
 
 	// Owner slugs that are really GitHub's own pages, not user/org repos.
@@ -129,6 +165,7 @@
 
 	const getStar = (repoName) => {
 		const apiUrl = `https://api.github.com/repos/${repoName}`;
+		const token = getAccessToken();
 
 		return new Promise((resolve, reject) => {
 			// eslint-disable-next-line no-undef
@@ -139,7 +176,7 @@
 				// `token ` with an empty value makes GitHub reject *every* request
 				// with 401; omitting it falls back to unauthenticated access
 				// (lower rate limit, but it works out of the box).
-				headers: accessToken ? { Authorization: `token ${accessToken}` } : {},
+				headers: token ? { Authorization: `token ${token}` } : {},
 				// Without a timeout, a connection that never completes fires neither
 				// onload nor onerror, leaving this promise pending forever — which
 				// permanently leaks one of the concurrency slots draining the queue.
